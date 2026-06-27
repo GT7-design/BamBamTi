@@ -158,6 +158,11 @@ function renderAdminDashboard() {
       </div>
     </div>
 
+    <div class="api-key-panel">
+      <label for="geminiApiKey">Gemini API Key</label>
+      <input type="password" id="geminiApiKey" placeholder="여기에 API Key를 입력하세요..." autocomplete="off" />
+    </div>
+
     <section class="admin-grid" aria-label="전체 학생 정보">
       ${STUDENTS.map(renderStudentCard).join("")}
     </section>
@@ -176,6 +181,10 @@ function renderStudentCard(student) {
         <p class="student-number">학번 ${student.id}</p>
         ${renderGrades(student.grades, true, `gradesTitle-${student.id}`)}
         ${renderTraits(student)}
+        <button type="button" class="ai-counseling-btn" onclick="generateCounselingStrategy('${student.id}', this)">
+          ✨ AI 상담 전략 생성
+        </button>
+        <div id="aiResult-${student.id}" class="ai-result-box hidden"></div>
       </div>
     </article>
   `;
@@ -210,6 +219,58 @@ function renderTraits(student) {
       </ul>
     </section>
   `;
+}
+
+async function generateCounselingStrategy(studentId, btnElement) {
+  const apiKeyInput = document.getElementById("geminiApiKey");
+  const apiKey = apiKeyInput ? apiKeyInput.value.trim() : "";
+  if (!apiKey) {
+    alert("Gemini API Key를 입력해주세요.");
+    return;
+  }
+
+  const student = STUDENTS.find((s) => s.id === studentId);
+  if (!student) return;
+
+  const resultBox = document.getElementById(`aiResult-${student.id}`);
+  
+  btnElement.disabled = true;
+  btnElement.innerHTML = '<div class="loading-spinner"></div> 생성 중...';
+  resultBox.classList.add("hidden");
+  resultBox.textContent = "";
+
+  const promptText = `다음 학생의 성적과 특성을 분석하여 교사가 어떻게 상담하고 지도하면 좋을지 전략을 3가지 항목으로 짧게 요약해주세요.
+이름: ${student.name}
+성적: ${JSON.stringify(student.grades)}
+특성: ${student.traits.join(", ")}
+교사 메모: ${student.teacherMemo}`;
+
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: promptText }] }]
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error("API 호출에 실패했습니다. 키를 확인해주세요.");
+    }
+
+    const data = await response.json();
+    const strategy = data.candidates[0].content.parts[0].text;
+    
+    resultBox.textContent = strategy;
+    resultBox.classList.remove("hidden");
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    btnElement.disabled = false;
+    btnElement.innerHTML = '✨ AI 상담 전략 생성';
+  }
 }
 
 showOnly(loginView);
