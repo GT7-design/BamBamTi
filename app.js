@@ -158,14 +158,30 @@ function renderAdminDashboard() {
       </div>
     </div>
 
-    <div class="api-key-panel">
-      <label for="geminiApiKey">Gemini API Key</label>
-      <input type="password" id="geminiApiKey" placeholder="여기에 API Key를 입력하세요..." autocomplete="off" />
-    </div>
-
     <section class="admin-grid" aria-label="전체 학생 정보">
       ${STUDENTS.map(renderStudentCard).join("")}
     </section>
+    
+    <div id="aiPanelContainer" class="ai-panel">
+      <h3>✨ AI 학생 상담 전략 도우미</h3>
+      <p id="aiPanelInitialMsg">학생 카드에서 '상담 전략 요청' 버튼을 눌러주세요.</p>
+      <div id="aiPanelForm" class="hidden">
+        <div id="aiPanelStudentInfo" style="margin-bottom:16px; font-weight:bold; color:var(--primary);"></div>
+        <label for="teacherConcern">교사 상담 고민 입력</label>
+        <textarea id="teacherConcern" placeholder="예: 수업 참여는 좋은데 평가 결과가 낮습니다. 어떻게 상담하면 좋을까요?" oninput="updateJsonPreview()"></textarea>
+        
+        <label>전송 데이터 미리보기 (익명화됨)</label>
+        <div id="jsonPreview" class="json-preview"></div>
+        
+        <button type="button" id="aiSubmitBtn" class="ai-counseling-btn" onclick="submitCounselingRequest()">
+          AI 상담 전략 받기
+        </button>
+        
+        <div id="aiResult" class="ai-result-box hidden"></div>
+        <div id="aiError" class="ai-error-box hidden"></div>
+        <p class="ai-notice">AI 상담 전략은 참고용입니다. 최종 판단과 실제 상담은 교사가 학생의 상황을 종합적으로 고려하여 진행해야 합니다.</p>
+      </div>
+    </div>
   `;
 
   showOnly(adminView);
@@ -181,10 +197,9 @@ function renderStudentCard(student) {
         <p class="student-number">학번 ${student.id}</p>
         ${renderGrades(student.grades, true, `gradesTitle-${student.id}`)}
         ${renderTraits(student)}
-        <button type="button" class="ai-counseling-btn" onclick="generateCounselingStrategy('${student.id}', this)">
-          ✨ AI 상담 전략 생성
+        <button type="button" class="ghost-button" style="width:100%; margin-top:12px;" onclick="selectStudentForAI('${student.id}')">
+          상담 전략 요청
         </button>
-        <div id="aiResult-${student.id}" class="ai-result-box hidden"></div>
       </div>
     </article>
   `;
@@ -221,55 +236,112 @@ function renderTraits(student) {
   `;
 }
 
-async function generateCounselingStrategy(studentId, btnElement) {
-  const apiKeyInput = document.getElementById("geminiApiKey");
-  const apiKey = apiKeyInput ? apiKeyInput.value.trim() : "";
-  if (!apiKey) {
-    alert("Gemini API Key를 입력해주세요.");
-    return;
-  }
+/* 보안 점검용 주석:
+1. 프론트엔드에 API 키를 넣으면 개발자 도구에서 노출될 수 있다.
+2. Gemini API 호출은 Vercel Serverless Function에서 처리한다.
+3. .env 파일은 GitHub에 올리지 않는다.
+4. Vercel 배포 시에는 Project Settings의 Environment Variables에 GEMINI_API_KEY를 등록해야 한다.
+5. Gemini로 전송하는 데이터는 이름, 학번, 사진 경로를 제외한 최소 정보로 제한한다.
+*/
 
+let selectedStudentForAI = null;
+
+function selectStudentForAI(studentId) {
   const student = STUDENTS.find((s) => s.id === studentId);
   if (!student) return;
 
-  const resultBox = document.getElementById(`aiResult-${student.id}`);
-  
-  btnElement.disabled = true;
-  btnElement.innerHTML = '<div class="loading-spinner"></div> 생성 중...';
-  resultBox.classList.add("hidden");
-  resultBox.textContent = "";
+  selectedStudentForAI = student;
 
-  const promptText = `다음 학생의 성적과 특성을 분석하여 교사가 어떻게 상담하고 지도하면 좋을지 전략을 3가지 항목으로 짧게 요약해주세요.
-이름: ${student.name}
-성적: ${JSON.stringify(student.grades)}
-특성: ${student.traits.join(", ")}
-교사 메모: ${student.teacherMemo}`;
+  document.getElementById("aiPanelInitialMsg").classList.add("hidden");
+  const aiForm = document.getElementById("aiPanelForm");
+  aiForm.classList.remove("hidden");
+
+  document.getElementById("aiPanelStudentInfo").textContent = `선택된 학생: ${student.name} (${student.id})`;
+  document.getElementById("teacherConcern").value = "";
+  document.getElementById("aiResult").classList.add("hidden");
+  document.getElementById("aiError").classList.add("hidden");
+
+  updateJsonPreview();
+  
+  // 패널로 스크롤 이동
+  document.getElementById("aiPanelContainer").scrollIntoView({ behavior: "smooth" });
+}
+
+function updateJsonPreview() {
+  if (!selectedStudentForAI) return;
+  const concern = document.getElementById("teacherConcern").value.trim();
+  
+  const studentIndex = STUDENTS.findIndex((s) => s.id === selectedStudentForAI.id);
+  const alias = `학생 ${String.fromCharCode(65 + studentIndex)}`;
+  
+  const gradeSummary = Object.entries(selectedStudentForAI.grades)
+    .map(([k, v]) => `${k}: ${v}`).join(", ");
+  const learningTraits = [...selectedStudentForAI.traits, selectedStudentForAI.teacherMemo].join(" ");
+  
+  const payload = {
+    studentAlias: alias,
+    gradeSummary: gradeSummary,
+    learningTraits: learningTraits,
+    teacherConcern: concern || "(입력 대기 중...)"
+  };
+  
+  document.getElementById("jsonPreview").textContent = JSON.stringify(payload, null, 2);
+}
+
+async function submitCounselingRequest() {
+  if (!selectedStudentForAI) return;
+  
+  const concern = document.getElementById("teacherConcern").value.trim();
+  if (!concern) {
+    alert("상담 고민을 먼저 입력해주세요.");
+    return;
+  }
+  
+  const studentIndex = STUDENTS.findIndex((s) => s.id === selectedStudentForAI.id);
+  const alias = `학생 ${String.fromCharCode(65 + studentIndex)}`;
+  const gradeSummary = Object.entries(selectedStudentForAI.grades)
+    .map(([k, v]) => `${k}: ${v}`).join(", ");
+  const learningTraits = [...selectedStudentForAI.traits, selectedStudentForAI.teacherMemo].join(" ");
+  
+  const payload = {
+    studentAlias: alias,
+    gradeSummary: gradeSummary,
+    learningTraits: learningTraits,
+    teacherConcern: concern
+  };
+
+  const btn = document.getElementById("aiSubmitBtn");
+  const resultBox = document.getElementById("aiResult");
+  const errorBox = document.getElementById("aiError");
+
+  btn.disabled = true;
+  btn.innerHTML = '<div class="loading-spinner"></div> AI가 상담 전략을 생성하는 중입니다.';
+  resultBox.classList.add("hidden");
+  errorBox.classList.add("hidden");
 
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
-      method: "POST",
+    const response = await fetch('/api/gemini-counseling', {
+      method: 'POST',
       headers: {
-        "Content-Type": "application/json"
+        'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: promptText }] }]
-      })
+      body: JSON.stringify(payload)
     });
 
-    if (!response.ok) {
-      throw new Error("API 호출에 실패했습니다. 키를 확인해주세요.");
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+      throw new Error(data.error || "서버 통신 오류");
     }
 
-    const data = await response.json();
-    const strategy = data.candidates[0].content.parts[0].text;
-    
-    resultBox.textContent = strategy;
+    resultBox.textContent = data.result;
     resultBox.classList.remove("hidden");
   } catch (error) {
-    alert(error.message);
+    errorBox.textContent = "AI 상담 전략을 불러오지 못했습니다. API 키 또는 Vercel 환경 변수를 확인해주세요.";
+    errorBox.classList.remove("hidden");
   } finally {
-    btnElement.disabled = false;
-    btnElement.innerHTML = '✨ AI 상담 전략 생성';
+    btn.disabled = false;
+    btn.innerHTML = 'AI 상담 전략 받기';
   }
 }
 
